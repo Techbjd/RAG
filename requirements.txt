@@ -1,0 +1,14 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+pydantic-settings>=2.3
+python-multipart>=0.0.9
+numpy>=1.26
+pypdf>=4.2
+sentence-transformers>=3.0
+
+# Optional: hosted embeddings / generated answers
+# openai>=1.40
+
+# Optional: EPUB support (stdlib zipfile also works for simple EPUBs)
+# ebooklib>=0.18
