@@ -12,7 +12,7 @@ class Chapter:
     text:str
     page_start:int|None
     page_end:int | None
-    
+
 
 @dataclass
 class Book:
@@ -21,23 +21,26 @@ class Book:
     title:str
     source_path:str
     chapters: list[Chapter]
-    
-    
+
+
 SUPPORTED_SUFFIXES={".pdf",".txt",".md",".json",}
 #This accepts Chapter 1, Chapter 1: The Storm, and Chapter IV - Beginnings, but not Chapter 1.1 or Chapter One
-_CHAPTER_HEADING = re.compile( 
+_CHAPTER_HEADING = re.compile(
     r"^\s*(?:chapter|part|book)\s+(?:\d+|[ivxlcdm]+)"
     r"\s*(?:[:.\-–—]\s*.*)?$",
     re.IGNORECASE,
 )
 #Also allow Markdown headings with up to three leading spaces:
 _MARKDOWN_HEADING = re.compile(r"^\s{0,3}#{1,3}\s+(.+?)\s*#*\s*$")
-    
-    
+
+
+# this help in processing the book into chapter text and also help in cleaning the
+# text and removing the extra spaces and new lines and also help in calculating the sha256 hash of the file
+
 def ingest_book(path :str| Path ,title:str | None =None) -> Book:
     """_summary_
-    it first analyze the input  file is correct or not then store its information from page to page 
-    
+    it first analyze the input  file is correct or not then store its information from page to page
+
 
     Args:
         path (str | Path): _description_
@@ -49,10 +52,10 @@ def ingest_book(path :str| Path ,title:str | None =None) -> Book:
     file_path=Path(path)
     if not file_path.exists():
         raise FileNotFoundError(f"file {file_path} does not exist")
-    
+
     if not file_path.is_file():
         raise ValueError(f"file {file_path} is not a file")
-    
+
     suffix=file_path.suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
         supported = ", ".join(sorted(SUPPORTED_SUFFIXES))
@@ -60,18 +63,18 @@ def ingest_book(path :str| Path ,title:str | None =None) -> Book:
 
     sha256 = _sha256_file(file_path)
     pages = _read_pages(file_path)
-    
-    chapters=[] 
-    
+
+    chapters=[]
+
     cleaned_pages=[
             (page_number, _clean_text(text))
             for page_number, text in pages
         ]
     chapters=_split_chapters(cleaned_pages)
-        
+
     if not chapters:
             raise ValueError(f"file {file_path} does not contain any text")
-        
+
     return Book(
             id=sha256,
             sha256=sha256,
@@ -80,11 +83,6 @@ def ingest_book(path :str| Path ,title:str | None =None) -> Book:
             chapters=chapters
         )
 
-    
-    
-    
-    
-    
 
 
 
@@ -106,14 +104,14 @@ def _sha256_file(path:Path) -> str:
             if not chunk:
                 break
             digest.update(chunk)
-    return digest.hexdigest()    
-    
-    
+    return digest.hexdigest()
+
+
 def _read_pages(path: Path) -> list[tuple[int, str]]:
     suffix = path.suffix.lower()
 
     if suffix == ".pdf":
-        reader = PdfReader(str(path)) #first read the if the folder is the pdf 
+        reader = PdfReader(str(path)) #first read the if the folder is the pdf
 
         if reader.is_encrypted:
             raise ValueError(f"Encrypted PDFs are not supported: {path}")
@@ -196,7 +194,7 @@ def _clean_text(text:str)->str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
-    
+
 def _split_chapters(pages: list[tuple[int, str]]) -> list[Chapter]:
     chapters: list[Chapter] = []
     current: Chapter | None = None
@@ -270,11 +268,4 @@ def _match_heading(line: str) -> str | None:
     if len(line) <= 80 and _CHAPTER_HEADING.match(line):
         return line.strip()
 
-    return None    
-    
-    
-    
-    
-    
-    
-    
+    return None
