@@ -10,13 +10,15 @@ Output:
 
 from __future__ import annotations
 
+from dataclasses import replace
+from functools import lru_cache
 from typing import Sequence
+
+import numpy as np
+from sentence_transformers import CrossEncoder
+
 from app.core.config import get_settings
 from app.rag.retrieval import Candidate
-from functools import lru_cache
-from sentence_transformers import CrossEncoder
-import numpy as np
-from rank_bm25 import BM25Okapi
 
 @lru_cache(maxsize=2)
 def _load(model_name: str) -> CrossEncoder:
@@ -74,7 +76,7 @@ def rerank(
         )
 
     rescored = [
-        rescored(candidate, score=float(score))
+        replace(candidate, score=float(score))
         for candidate, score in zip(candidates, raw_scores)
     ]
     rescored.sort(key=lambda candidate: candidate.score, reverse=True)
