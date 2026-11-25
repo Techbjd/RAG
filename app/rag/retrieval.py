@@ -16,6 +16,8 @@ from typing import Sequence
 
 import numpy as np
 
+from rank_bm25 import BM25Okapi
+
 from app.rag.step2_chunk import Chunk
 import re
 
@@ -59,7 +61,7 @@ def normalize_scores(scores: Sequence[float]) -> list[float]:
     if high-low <=1e-12:
         return [0.0]*len(values)
 
-    return [(values-low)/(high-low) for value in values]
+    return [(value-low)/(high-low) for value in values]
 
 
 #make sure that the  text having upper case ans lowecase same and no concatianton bettwen sentence
@@ -96,13 +98,12 @@ def hybrid_search(
     vectors =np.asarray(vectors,dtype=np.float32)
     if vectors.ndim !=2 or vectors.shape[0] != n_chunks:
         raise ValueError(
-            f" vector must have shape ({n_chunks}, dim), got{
-                vectors.shape }"
-                )
+            f"vectors must have shape ({n_chunks}, dim), got {vectors.shape}"
+        )
 
     query_vector=np.asarray(query_vector,dtype=np.float32).reshape(-1)
 
-    if query_vector.shape[0] != vectors.shape[0]:
+    if query_vector.shape[0] != vectors.shape[1]:
         raise ValueError(
             f"query vector dim {query_vector.shape[0]} "
             f"!= index dim {vectors.shape[1]}"
@@ -119,7 +120,7 @@ def hybrid_search(
     query_tokens=_tokenize(query)
 
     if query_tokens:
-        bm25 =BM250kapi(corpus)
+        bm25 = BM25Okapi(corpus)
         keyword_raw = np.asarray(
             bm25.get_scores(query_tokens), dtype=np.float32
         )
@@ -188,4 +189,4 @@ def deduplicate_candidates(
         per_chapter[candidate.chapter]=used +1
         kept.append(candidate)
 
-        return kept
+    return kept
