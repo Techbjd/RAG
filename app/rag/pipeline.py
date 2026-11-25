@@ -20,15 +20,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
-from sqlalchemy.engine import Engine, make_url
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.db.models import Base
+from app.db.database import (
+    create_db_engine,
+    create_session_factory,
+    init_db,
+)
 from app.rag.step1_ingest import Book, ingest_book
 from app.rag.step2_chunk import Chunk, chunk_book
-from app.rag.step3_embed import EmbeddingResult, embed_chunks
+from app.rag.step3_embed import EmbeddingResult,embed_chunks
 from app.rag.step4_store import (
     StoredIndex,
     get_document_id,
@@ -54,35 +56,6 @@ class IndexResult:
     embedded: EmbeddingResult
     stored: StoredIndex
     replaced: bool
-
-
-def _create_engine(settings: Settings) -> Engine:
-    """Build the engine for ``settings.database_url``.
-
-    For SQLite the parent directory is created on demand and foreign keys
-    are enabled per connection so ``ON DELETE CASCADE`` actually runs.
-    """
-    url = settings.database_url
-
-    if url.startswith("sqlite"):
-        database = make_url(url).database
-        if database and database != ":memory:":
-            Path(database).parent.mkdir(parents=True, exist_ok=True)
-
-        engine = create_engine(
-            url,
-            connect_args={"check_same_thread": False},
-        )
-
-        @event.listens_for(engine, "connect")
-        def _enable_foreign_keys(dbapi_connection, _connection_record):
-            cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.close()
-
-        return engine
-
-    return create_engine(url)
 
 
 def index_book(
@@ -133,9 +106,9 @@ def index_book(
             commit=False,
         )
 
-    engine = _create_engine(settings)
-    Base.metadata.create_all(engine)
-    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    engine = create_db_engine(settings)
+    init_db(engine, settings)
+    factory = create_session_factory(engine)
 
     with factory() as owned_session:
         try:

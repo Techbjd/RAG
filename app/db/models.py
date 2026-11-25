@@ -94,6 +94,9 @@ class Chunk(Base):
         nullable=True,
         index=True,
     )
+    # Stable Step 2 chunk id (sha256 of book id + ordinal) so retrieval
+    # sources keep the same id after a store -> load round-trip.
+    uid: Mapped[str] = mapped_column(Text, unique=True, nullable=False, index=True)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     chapter_title: Mapped[str] = mapped_column(Text, nullable=False)
     page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -131,6 +134,6 @@ class Meta(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
-        on_update=func.now(),
+        onupdate=func.now(),
         nullable=False,
     )

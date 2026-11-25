@@ -2,7 +2,10 @@
 
 A local retrieval-augmented generation pipeline for books. It ingests a
 book, splits it into chapters and overlapping chunks, embeds the chunks,
-stores them in SQLite, and answers questions with cited passages.
+stores them in Postgres + pgvector, and answers questions with cited passages.
+
+The database runs in Docker. All book-rag tables live in the `book_rag`
+schema of the `bookrag` database, leaving `public` untouched.
 
 ## Pipeline
 
@@ -11,7 +14,7 @@ stores them in SQLite, and answers questions with cited passages.
 | 1. Ingest | `app/rag/step1_ingest.py` | Read `.pdf`, `.txt`, `.md`, or `.json` and produce cleaned, page-aware chapters |
 | 2. Chunk | `app/rag/step2_chunk.py` | Split chapters into overlapping passages with citation metadata |
 | 3. Embed | `app/rag/step3_embed.py` | Encode chunks with a frozen sentence-transformer model |
-| 4. Store | `app/rag/step4_store.py` | Persist documents, chunks, and vectors in SQLite |
+| 4. Store | `app/rag/step4_store.py` | Persist documents, chunks, and vectors in Postgres (`book_rag` schema) |
 | 5. Answer | `app/rag/step5_answer.py` | Hybrid retrieval, reranking, thresholding, and grounded answers |
 
 `app/rag/pipeline.py` runs Steps 1–4. Step 5 is the read path and runs once
@@ -19,6 +22,7 @@ per question.
 
 ## Project status
 
+- Docker + pgvector database is running in the `book_rag` schema.
 - Steps 1–3 are implemented and covered by tests.
 - Step 4 has the schema and helpers, but the row-writing part of
   `store_index()` is still incomplete.
@@ -29,6 +33,7 @@ per question.
 ## Requirements
 
 - Python 3.11 or newer
+- Docker with Compose
 - A CPU is sufficient; the default models run locally
 
 Install dependencies:
@@ -40,6 +45,27 @@ pip install -r requirements.txt
 ```
 
 The first embedding or reranking call downloads the configured model.
+
+## Database
+
+Start the pgvector container from the project root, then let `init_db()`
+create the extension, schema, and tables:
+
+```bash
+docker compose up -d
+python -c "from app.db.database import create_db_engine, init_db; init_db(create_db_engine())"
+```
+
+Confirm the extension and schema:
+
+```bash
+docker compose exec db psql -U bookrag -d bookrag \
+  -c "select extversion from pg_extension where extname='vector';"
+```
+
+`compose.yaml` binds Postgres to `127.0.0.1:5433` and uses the named volume
+`bookrag_pgdata`. `init_db()` creates the pgvector extension, the `book_rag`
+schema, and all tables.
 
 ## Configuration
 
@@ -54,7 +80,8 @@ Settings are loaded by `app/core/config.py`.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `DATA_DIR` | `./data` | Base directory for raw, processed, and index data |
-| `DATABASE_URL` | `sqlite:///./data/index.db` | SQLAlchemy database URL |
+| `DATABASE_URL` | `postgresql+psycopg://bookrag:bookrag_dev@127.0.0.1:5433/bookrag` | SQLAlchemy database URL |
+| `DATABASE_SCHEMA` | `book_rag` | Schema used by all book-rag tables |
 | `CHUNK_SIZE` | `1000` | Maximum characters per chunk |
 | `CHUNK_OVERLAP` | `150` | Overlap between adjacent chunks |
 | `EMBEDDING_BACKEND` | `sentence-transformers` | Embedding backend |
@@ -92,16 +119,17 @@ print(result.embedded.vectors.shape)
 Run a question against the stored index:
 
 ```python
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.db.database import create_db_engine, create_session_factory
 from app.rag.step5_answer import answer_question
 
 settings = get_settings()
-engine = create_engine(settings.database_url)
+engine = create_db_engine(settings)
+factory = create_session_factory(engine)
 
-with Session(engine) as session:
+with factory() as session:
     answer = answer_question("Who built the tide clock?", session=session)
     print(answer.answer)
     for source in answer.sources:
@@ -113,9 +141,11 @@ These end-to-end examples require the pending Step 4 row writes.
 ## Project layout
 
 ```text
+compose.yaml      Postgres + pgvector container
 app/
   api/            FastAPI routes (not implemented)
   core/config.py  Typed settings from environment
+  db/database.py  Engine, sessions, schema initialization
   db/models.py    SQLAlchemy schema
   rag/
     step1_ingest.py
@@ -131,14 +161,14 @@ app/
 data/
   raw/            Source books (git-ignored)
   processed/      Generated artifacts (git-ignored)
-  index/          SQLite index (git-ignored)
 tests/            Offline unit tests
 ```
 
 ## Data and generated files
 
 - Put source books in `data/raw/`.
-- Generated files under `data/processed/` and `data/index/` are ignored by Git.
+- Generated files under `data/processed/` are ignored by Git.
+- Postgres data lives in the `bookrag_pgdata` Docker volume, outside the repo.
 - `.env` is ignored; use `.env.example` as the template.
 
 ## Tests
@@ -148,12 +178,11 @@ pytest -q
 ```
 
 The test suite is offline. Retrieval and reranking tests use fake scores and
-do not download model weights.
+do not download model weights. Run it as `python -m pytest -q` (or plain
+`pytest -q`, which uses the `pythonpath = .` setting in `pytest.ini`).
 
 ## Known limitations
 
 - `step4_store.validate_embedding_result()` and the row inserts in
   `store_index()` are incomplete.
-- SQLite auto-increment for the `Chapter` and `Chunk` primary keys still needs
-  an `INTEGER` variant before inserts work.
 - There is no HTTP API or CLI yet.

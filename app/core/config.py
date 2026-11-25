@@ -10,7 +10,11 @@ class Settings(BaseSettings):
     # --- App ---
     app_name: str = "book-rag"
     data_dir: str = "./data"
-    database_url: str = "sqlite:///./data/index.db"
+    database_url: str = (
+        "postgresql+psycopg://bookrag:bookrag_dev@127.0.0.1:5433/bookrag"
+    )
+    # Dedicated schema for this project; "public" is left untouched.
+    database_schema: str = "book_rag"
 
     # --- Step 2: chunking ---
     chunk_size: int = 1000
