@@ -1,10 +1,31 @@
+"""Step 4 - Store: vectors + text -> SQLite index.
+
+Input comes from:
+    Step 1: Book (document metadata + sha256)
+    Step 2: list[Chunk] (text + citation metadata)
+    Step 3: EmbeddingResult (model, dim, row-aligned vectors)
+
+Output:
+    Rows in data/index.db: Document/Chapter/Chunk/Embedding/Meta.
+    On read, load_index() returns StoredIndex(document_id, model, dim,
+    chunks, vectors).
+
+Who consumes it:
+    Step 5 (app.rag.step5_answer.answer_question) calls load_index() for
+    every stored document.
+
+Transaction rule: these helpers flush but never commit; the caller owns
+the transaction.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import numpy as np
+from sqlalchemy import select
 from sqlalchemy.orm import Session
-import select
+
 
 from app.db.models import Chapter as ChapterRow
 from app.db.models import Chunk as ChunkRow
@@ -19,7 +40,7 @@ META_SIGNATURE_KEY = "embedding_signature"
 
 @dataclass
 class StoredIndex:
-    """The index as stored after Step 4.
+    """
 
     Attributes:
         document_id: Stored document ID.
@@ -60,6 +81,12 @@ def _stored_signature(session: Session) -> str | None:
     ...
 
 def signatures_match(stored: str | None, current: str) -> bool:
+    """True when there is no stored signature yet or it equals ``current``.
+
+    Called by _ensure_signature_compatible() during store_index().
+    A mismatch means the embedding model/dimension changed and the index
+    must be reset before new vectors can be written.
+    """
     return stored is None or stored == current
 
 def _ensure_signature_compatible(session: Session, signature: str) -> None:
@@ -86,16 +113,23 @@ def _set_stored_signature(session: Session, signature: str) -> None:
 
 
 def reset_index(session: Session) -> None:
-    """Delete all indexed rows so a new embedding model can be used."""
+    """Delete all indexed rows so a new embedding model can be used.
+
+    Clears the stored embedding signature; the caller then re-runs Steps 1-4.
+    """
     row =session.get(Meta,META_SIGNATURE_KEY)
     if row is not None:
         session.delete(row)
-Session.flush()
+    session.flush()
 
 
 
 def delete_document(session: Session, document_id: str) -> None:
-    """Delete one document; cascades remove its chapters/chunks/embeddings."""
+    """Delete one document; cascades remove its chapters/chunks/embeddings.
+
+    Called by store_index() when the same sha256 is re-ingested, and by the
+    API when a book is removed.
+    """
     row=session.get(Document,document_id)
     if row is not None:
         session.delete(row)
@@ -119,6 +153,7 @@ def store_index(
 ) -> StoredIndex:
     """Write document, chapters, chunks, and vectors in the caller's transaction.
 
+    Input comes from Steps 1-3 (book, chunks, embedded).
     Re-ingesting the same ``sha256`` should replace the old document instead
     of creating duplicate rows. This function flushes but does not commit;
     transaction control belongs to the caller.
@@ -140,8 +175,10 @@ def store_index(
 def load_index(session: Session, document_id: str) -> StoredIndex | None:
     """Load chunks and vectors in ordinal order for Step 5.
 
-    Returns ``None`` when the document does not exist. Chunk IDs should come
-    from the stable ``uid`` column so retrieval sources match Step 2 IDs.
+    Input: ``document_id`` comes from the Document table (Step 5 iterates
+    every stored document). The rows were written by store_index().
+    Returns ``None`` when the document does not exist. Chunk IDs come from
+    the stable ``uid`` column so retrieval sources match Step 2 IDs.
     """
     rows = session.execute(
         select(
