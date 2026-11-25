@@ -1,3 +1,22 @@
+"""Step 3 - Embed: chunks -> normalized vectors.
+
+Input comes from:
+    Step 2: list[Chunk] from app.rag.step2_chunk.chunk_book().
+    The text embedded is "chapter\\nchunk text" (see _texts_for_embedding).
+
+Output:
+    EmbeddingResult(model, dim, vectors, chunk_ids), where vectors is a
+    float32 matrix of shape (n_chunks, dim), L2-normalized and row-aligned
+    with chunk_ids.
+
+Who consumes it:
+    Step 4 (app.rag.step4_store.store_index) writes the vectors to SQLite.
+    Step 5 reuses the same embedder for the query vector.
+
+Important: the embedding model is frozen. Index-time and query-time must use
+the same model/dimension or their vectors are not comparable.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -29,7 +48,12 @@ def _load_model(model_name: str) -> SentenceTransformer:
 
 
 def _texts_for_embedding(chunks: Sequence[Chunk]) -> list[str]:
-    """Build the text that gets embedded for each chunk."""
+    """Build the text that gets embedded for each chunk.
+
+    Input comes from Step 2 via embed_chunks(). Prepending the chapter title
+    gives the vector a little topical context; Step 5 shows the original
+    Chunk.text, not this prefixed version.
+    """
     return [
         f"{chunk.chapter}\n{chunk.text}" if chunk.chapter else chunk.text
         for chunk in chunks
@@ -58,7 +82,11 @@ def _normalize_or_check(vectors: np.ndarray, tol: float = 1e-3) -> np.ndarray:
 
 
 def load_embedder(model_name: str | None = None) -> SentenceTransformer:
-    """Public helper for FastAPI lifespan: load model once at startup."""
+    """Public helper for FastAPI lifespan: load model once at startup.
+
+    Also called by Step 5 (_embed_question) so the query is embedded with
+    exactly the same model used for the stored chunks.
+    """
     if model_name is None:
         model_name = get_settings().embedding_model
     return _load_model(model_name)
@@ -70,7 +98,24 @@ def embed_chunks(
     batch_size: int | None = None,
     model: SentenceTransformer | None = None,  # inject a fake in tests
 ) -> EmbeddingResult:
-    """Embed chunks into normalized vectors."""
+    """Embed chunks into normalized vectors.
+
+    Input comes from Step 2 (chunk_book). The returned EmbeddingResult is
+    passed to Step 4 (store_index), which validates row alignment.
+
+    Args:
+        chunks: Chunks produced by Step 2.
+        settings: App settings (backend, model name, dimension, batch size).
+        batch_size: Optional override of settings.embedding_batch.
+        model: Optional preloaded/fake encoder; loaded from settings if None.
+
+    Returns:
+        EmbeddingResult with one vector per chunk, L2-normalized.
+
+    Raises:
+        ValueError: Unsupported backend, bad batch size, wrong row count, or
+            a dimension that does not match settings.embedding_dim.
+    """
     if settings.embedding_backend != "sentence-transformers":
         raise ValueError(
             f"unsupported embedding_backend={settings.embedding_backend!r}; "
