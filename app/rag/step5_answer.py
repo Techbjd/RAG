@@ -1,3 +1,28 @@
+"""Step 5 - Answer: question + stored index -> grounded answer + sources.
+
+Where the input comes from:
+    question : the user's text, passed by the API layer (POST /api/query)
+    session  : a SQLAlchemy Session owned by the API layer
+    settings : app.core.config.Settings
+
+What it reads:
+    SQLite rows written by Step 4, loaded through step4_store.load_index().
+
+Pipeline:
+    1. load every stored document index
+    2. embed the question with the same model used in Step 3
+    3. hybrid retrieval (vector + BM25) -> Candidate list
+    4. cross-encoder rerank
+    5. score threshold + deduplicate -> final passages
+    6. answer from those passages (extractive or Gemini), or refuse
+
+What it returns:
+    Answer(answer: str, sources: list[Source]) for the API to serialize.
+
+Design rule: answer only from retrieved passages. If nothing clears the
+threshold, return REFUSAL instead of using outside knowledge.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -45,7 +70,12 @@ class Answer:
 
 
 def _embed_question(question: str, settings: Settings) -> np.ndarray:
-    """Encode the question with the same frozen embedder used for chunks."""
+    """Encode the question with the same frozen embedder used for chunks.
+
+    Input comes from answer_question(). The encoder is the Step 3 embedder
+    (step3_embed.load_embedder), so the query vector lives in the same space
+    as the stored vectors.
+    """
 
     question = question.strip()
 
@@ -92,7 +122,13 @@ def _extractive_answer(sources: list[Source]) -> str:
 
 
 def _llm_answer(question: str, sources: list[Source], settings: Settings) -> str:
-    """Ask the configured LLM to answer only from numbered passages."""
+    """Ask the configured LLM to answer only from numbered passages.
+
+    Input comes from answer_question(): the already-filtered Source list
+    (Step 5 retrieval output) and the original question. Each source becomes
+    a numbered passage "[n] chapter (pages)\\ntext"; the model is instructed
+    to cite those numbers and to refuse when the passages do not answer.
+    """
 
     if settings.llm_backend == "extractive":
         return _extractive_answer(sources)
@@ -147,6 +183,20 @@ def answer_question(
     session: Session | None = None,
 ) -> Answer:
     """Retrieve, rerank, threshold, and answer with sources.
+
+    Inputs:
+        question: user question from the API layer.
+        top_k: how many final passages to keep/send to the answer model.
+        settings: app settings (defaults to get_settings()).
+        session: SQLAlchemy Session from the API layer (required).
+
+    Data flow:
+        Step 4 rows -> load_index() -> chunks + vectors
+        Step 3 embedder -> query vector
+        retrieval.hybrid_search() -> wide Candidate list
+        rerank.rerank() -> narrow Candidate list
+        min_score + dedupe -> final Source list
+        extractive/Gemini -> Answer
 
     Workflow:
         1. Load the stored index.
