@@ -21,6 +21,10 @@ data/processed/*
 data/raw/*
 !data/raw/.gitkeep
 
+# Local build guide (kept on disk, not published)
+RAG_Pipeline_Tutorial.md
+RAG_Pipeline_Tutorial.odt
+
 # OS / editor
 .DS_Store
 .idea/
