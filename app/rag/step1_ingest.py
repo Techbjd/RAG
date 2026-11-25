@@ -1,3 +1,20 @@
+"""Step 1 - Ingest: file -> clean chapters + page metadata.
+
+Where the input comes from:
+    The caller (API upload / CLI / pipeline) passes a file path.
+
+What this step produces:
+    Book(id, sha256, title, source_path, chapters=[Chapter, ...])
+    - Book.id is the file sha256, used as the stable document identity.
+    - Each Chapter keeps page_start/page_end so later citations work.
+
+Who consumes it:
+    Step 2 (app.rag.step2_chunk.chunk_book) reads Book.chapters.
+    Step 4 (app.rag.step4_store.store_index) reads Book metadata to persist rows.
+
+This step does NOT touch the database or embeddings.
+"""
+
 from dataclasses import dataclass
 
 from pathlib import Path
@@ -38,16 +55,28 @@ _MARKDOWN_HEADING = re.compile(r"^\s{0,3}#{1,3}\s+(.+?)\s*#*\s*$")
 # text and removing the extra spaces and new lines and also help in calculating the sha256 hash of the file
 
 def ingest_book(path :str| Path ,title:str | None =None) -> Book:
-    """_summary_
-    it first analyze the input  file is correct or not then store its information from page to page
+    """Turn one supported file into a Book of cleaned, page-aware chapters.
 
+    Input comes from the caller (API/CLI/pipeline): a path to .pdf/.txt/.md/.json.
+    Data flow inside this function:
+        1. validate the path and suffix
+        2. _sha256_file(path)      -> stable book/document id
+        3. _read_pages(path)       -> [(page_number, raw_text), ...]
+        4. _clean_text(raw_text)   -> normalized text per page
+        5. _split_chapters(pages)  -> list[Chapter]
+        6. return Book(...)        -> consumed by Step 2
 
     Args:
-        path (str | Path): _description_
-        title (str | None, optional): _description_. Defaults to None.
+        path: File to ingest.
+        title: Optional display title; defaults to the file stem.
 
     Returns:
-        Book: _description_
+        Book with id == sha256 and one or more chapters.
+
+    Raises:
+        FileNotFoundError: The path does not exist.
+        ValueError: The path is not a file, has an unsupported suffix, or
+            contains no extractable text.
     """
     file_path=Path(path)
     if not file_path.exists():
@@ -88,14 +117,16 @@ def ingest_book(path :str| Path ,title:str | None =None) -> Book:
 
 
 def _sha256_file(path:Path) -> str:
-    """_summary_
-    it will calculate the sha256 hash of the file
+    """Hash the whole file, reading 1 MB at a time.
+
+    Called by ingest_book(). The digest becomes Book.id/Book.sha256 and is
+    later used by Step 4 to detect re-ingesting the same file.
 
     Args:
-        path (Path): _description_
+        path: File to hash.
 
     Returns:
-        str: _description_
+        Lowercase hexadecimal sha256 digest.
     """
     digest = hashlib.sha256()
     with open(path,"rb") as file:
@@ -108,6 +139,22 @@ def _sha256_file(path:Path) -> str:
 
 
 def _read_pages(path: Path) -> list[tuple[int, str]]:
+    """Extract raw text page by page, before cleaning.
+
+    Input comes from ingest_book(path). Output is passed to _clean_text()
+    one page at a time.
+
+    Page numbering:
+        .pdf       -> real PDF page numbers (1-based)
+        .txt/.md   -> one pseudo-page numbered 1
+        .json      -> list of {"text": "..."} objects, numbered 1..n
+
+    Args:
+        path: Validated input file.
+
+    Returns:
+        List of (page_number, raw_text) tuples.
+    """
     suffix = path.suffix.lower()
 
     if suffix == ".pdf":
@@ -158,8 +205,11 @@ def _read_pages(path: Path) -> list[tuple[int, str]]:
 
 
 def _clean_text(text:str)->str:
-    r"""_summary_
-    it will clean the text by removing the extra spaces and new lines
+    r"""Normalize one page of raw extracted text.
+
+    Input comes from _read_pages(); output is fed to _split_chapters().
+
+    Cleaning steps:
 1. Normalize line endings
 - Convert \r\n and \r to \n.
 2. Normalize special spaces
@@ -196,6 +246,22 @@ def _clean_text(text:str)->str:
 
 
 def _split_chapters(pages: list[tuple[int, str]]) -> list[Chapter]:
+    """Group cleaned pages into chapters using heading detection.
+
+    Input comes from ingest_book() after _clean_text() has run on every page.
+
+    Behavior:
+        - A detected heading starts a new Chapter.
+        - Text before the first heading becomes "Front Matter".
+        - If no heading is found anywhere, each non-empty page becomes its
+          own chapter named "Page <n>" (fallback for unstructured text).
+
+    Args:
+        pages: [(page_number, cleaned_text), ...] in reading order.
+
+    Returns:
+        Chapters in book order, each with page_start/page_end filled in.
+    """
     chapters: list[Chapter] = []
     current: Chapter | None = None
     last_page: int | None = None
@@ -261,6 +327,18 @@ def _split_chapters(pages: list[tuple[int, str]]) -> list[Chapter]:
 
 
 def _match_heading(line: str) -> str | None:
+    """Return a chapter title if ``line`` looks like a heading.
+
+    Called by _split_chapters() for each non-empty line.
+
+    Matches:
+        - Markdown headings: "# Title", "## Title", "### Title"
+        - Chapter headings: "Chapter 1", "Chapter IV: The Storm",
+          "Part 2 - Beginnings", "Book 3" (max 80 characters)
+
+    Returns:
+        The cleaned heading text, or None when the line is body text.
+    """
     markdown = _MARKDOWN_HEADING.match(line)
     if markdown:
         return markdown.group(1).strip()
