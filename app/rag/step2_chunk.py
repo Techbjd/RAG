@@ -1,3 +1,19 @@
+"""Step 2 - Chunk: chapters -> overlapping passages.
+
+Input comes from:
+    Step 1: Book from app.rag.step1_ingest.ingest_book().
+    Uses Book.id (sha256) for stable chunk ids and Book.chapters as text.
+
+Output:
+    list[Chunk], one per passage. Each chunk is <= max_chars and shares
+    roughly `overlap` characters with the next chunk.
+
+Who consumes it:
+    Step 3 (app.rag.step3_embed.embed_chunks) embeds Chunk.text.
+    Step 4 (app.rag.step4_store.store_index) persists Chunk rows.
+    Step 5 (app.rag.step5_answer) turns Chunk metadata into citations.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -51,13 +67,16 @@ class _Piece:
 def chunk_book(book: Book, max_chars: int = 1000, overlap: int = 150) -> list[Chunk]:
     """Split a book's chapters into overlapping chunks.
 
+    Input comes from Step 1 (ingest_book). Each chapter is processed
+    independently so a chunk never mixes two chapters.
+
     Validates the size knobs, then processes each chapter independently:
     splits the chapter text into pieces, packs them into chunks of at most
     ``max_chars`` characters, and overlaps adjacent chunks by roughly
     ``overlap`` characters.
 
     Args:
-        book: The book to chunk.
+        book: The book to chunk, produced by Step 1 ingest_book().
         max_chars: Maximum number of characters allowed in a single chunk.
         overlap: Number of characters of overlap between adjacent chunks.
 
@@ -121,6 +140,7 @@ def chunk_book(book: Book, max_chars: int = 1000, overlap: int = 150) -> list[Ch
 def _split_pieces(text: str, max_chars: int) -> list[_Piece]:
     """Split chapter text into intermediate pieces.
 
+    Input comes from chunk_book() -> Chapter.text (originally Step 1).
     Paragraphs are split on blank lines, then each paragraph is split into
     sentences, and overly long sentences are broken into word groups. Each
     resulting fragment is tagged with whether it begins a new paragraph.
@@ -229,6 +249,8 @@ def _join(pieces: list[_Piece]) -> str:
 def _pack(pieces: list[_Piece], start: int, max_chars: int) -> tuple[int, str]:
     """Greedily pack pieces starting at ``start`` into a chunk.
 
+    Input comes from chunk_book() after _split_pieces().
+
     Pieces are added one at a time until adding the next would exceed
     ``max_chars``.
 
@@ -265,6 +287,9 @@ def _pack(pieces: list[_Piece], start: int, max_chars: int) -> tuple[int, str]:
 def _overlap_start(pieces: list[_Piece], end: int, overlap: int) -> int:
     """Find the start index for the next chunk to achieve overlap.
 
+    Called by chunk_book() after _pack() to move the window back slightly,
+    which creates the shared text between adjacent chunks.
+
     Walks backwards from ``end`` collecting pieces until adding another
     would exceed ``overlap`` characters.
 
@@ -291,6 +316,9 @@ def _overlap_start(pieces: list[_Piece], end: int, overlap: int) -> int:
 
 def _chunk_id(book_id: str, ordinal: int) -> str:
     """Generate a stable chunk id.
+
+    Called by chunk_book(); uses the Step 1 Book.id (sha256) plus the chunk
+    ordinal so re-chunking the same book keeps the same ids.
 
     Args:
         book_id: Identifier of the book.
