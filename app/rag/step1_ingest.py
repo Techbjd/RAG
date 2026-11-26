@@ -138,6 +138,19 @@ def _sha256_file(path:Path) -> str:
     return digest.hexdigest()
 
 
+def _extract_pdf_text(page) -> str:
+    """Extract one PDF page, preferring layout-preserving text.
+
+    ``extraction_mode="layout"`` keeps words on the same line, which avoids
+    the one-word-per-line output some PDFs produce. Fall back for older
+    pypdf versions or page objects that do not accept the argument.
+    """
+    try:
+        return page.extract_text(extraction_mode="layout") or ""
+    except TypeError:
+        return page.extract_text() or ""
+
+
 def _read_pages(path: Path) -> list[tuple[int, str]]:
     """Extract raw text page by page, before cleaning.
 
@@ -164,7 +177,7 @@ def _read_pages(path: Path) -> list[tuple[int, str]]:
             raise ValueError(f"Encrypted PDFs are not supported: {path}")
 
         return [
-            (page_number, page.extract_text() or "")
+            (page_number, _extract_pdf_text(page))
             for page_number, page in enumerate(reader.pages, start=1)
         ]
 
@@ -242,6 +255,7 @@ def _clean_text(text:str)->str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"(?m)^\s*\d{1,4}(?:\s+\d{1,4})*\s*$", "", text) #remove book title headers and footer noise
     return text.strip()
 
 
@@ -254,7 +268,7 @@ def _split_chapters(pages: list[tuple[int, str]]) -> list[Chapter]:
         - A detected heading starts a new Chapter.
         - Text before the first heading becomes "Front Matter".
         - If no heading is found anywhere, each non-empty page becomes its
-          own chapter named "Page <n>" (fallback for unstructured text).
+        own chapter named "Page <n>" (fallback for unstructured text).
 
     Args:
         pages: [(page_number, cleaned_text), ...] in reading order.

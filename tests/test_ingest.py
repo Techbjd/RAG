@@ -91,7 +91,7 @@ def test_ingest_pdf_pages_and_empty_extraction(monkeypatch, tmp_path):
         def __init__(self, text):
             self._text = text
 
-        def extract_text(self):
+        def extract_text(self, **kwargs):
             return self._text
 
     class FakeReader:
