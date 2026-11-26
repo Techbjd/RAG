@@ -45,3 +45,9 @@ class DocumentOut(BaseModel):
     id: str
     title: str
     source_path: str
+
+
+class ResetOut(BaseModel):
+    """Result of wiping the index with DELETE /api/books."""
+
+    deleted: int

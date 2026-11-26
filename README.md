@@ -148,6 +148,7 @@ uvicorn app.main:app --reload
 | `GET` | `/api/health` | Database health check |
 | `POST` | `/api/books` | Upload a book (multipart `file`) and run Steps 1–4 |
 | `GET` | `/api/books` | List indexed books |
+| `DELETE` | `/api/books` | Delete every indexed book and reset the embedding signature |
 | `POST` | `/api/query` | Ask a question (Step 5) |
 
 ```bash
@@ -160,6 +161,13 @@ curl -X POST http://127.0.0.1:8000/api/query \
 
 Uploads are saved under `DATA_DIR/raw/`. The accepted extensions, size limit,
 and `top_k` default all come from `.env` through `app/core/config.py`.
+
+If you change `EMBEDDING_MODEL` or `EMBEDDING_DIM`, wipe the old vectors first;
+otherwise uploads are rejected because the stored index uses a different model:
+
+```bash
+curl -X DELETE http://127.0.0.1:8000/api/books
+```
 
 ## Project layout
 

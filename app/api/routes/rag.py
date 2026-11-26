@@ -11,18 +11,20 @@ import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_session
 from app.db.models import Document
 from app.rag.pipeline import index_book
+from app.rag.step4_store import reset_index
 from app.rag.step5_answer import answer_question
 from app.schemas.rag import (
     AnswerOut,
     DocumentOut,
     IngestOut,
     QueryRequest,
+    ResetOut,
     SourceOut,
 )
 
@@ -126,3 +128,15 @@ def list_books(session: Session = Depends(get_session)):
         DocumentOut(id=row.id, title=row.title, source_path=row.source_path)
         for row in rows
     ]
+
+
+@router.delete("/books", response_model=ResetOut)
+def reset_books(session: Session = Depends(get_session)):
+    """Delete every indexed book and clear the embedding signature.
+
+    Use this after changing EMBEDDING_MODEL or EMBEDDING_DIM; otherwise
+    Step 4 refuses new uploads because the stored vectors are incompatible.
+    """
+    deleted = session.scalar(select(func.count()).select_from(Document)) or 0
+    reset_index(session)
+    return ResetOut(deleted=deleted)
