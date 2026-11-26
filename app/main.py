@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from app.core.config import get_settings
 from app.db.database import create_db_engine, create_session_factory, init_db
 
-from app.api.routes import health
+from app.api.routes import health, rag
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -22,6 +22,7 @@ app = FastAPI(title="BOOK RAG", lifespan=lifespan)
 
 app.include_router(health.router, tags=["health"])
 app.include_router(health.router, prefix="/api", tags=["health"])
+app.include_router(rag.router, prefix="/api", tags=["rag"])
 
 
 @app.get("/v1/models", include_in_schema=False)

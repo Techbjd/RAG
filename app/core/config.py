@@ -1,4 +1,6 @@
 from functools import lru_cache
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +17,12 @@ class Settings(BaseSettings):
     )
     # Dedicated schema for this project; "public" is left untouched.
     database_schema: str = "book_rag"
+
+    # --- API: uploads ---
+    # Comma-separated allowlist of file extensions accepted by POST /api/books.
+    upload_suffixes: str = ".pdf,.txt,.md,.json"
+    # Hard limit per uploaded file; larger uploads are rejected with 413.
+    max_upload_mb: int = 50
 
     # --- Step 2: chunking ---
     chunk_size: int = 1000
@@ -46,6 +54,20 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
+
+    @property
+    def raw_dir(self) -> Path:
+        """Directory where uploaded books are stored."""
+        return Path(self.data_dir) / "raw"
+
+    @property
+    def allowed_upload_suffixes(self) -> set[str]:
+        """Parse ``upload_suffixes`` into a lowercase set of extensions."""
+        return {
+            suffix.strip().lower()
+            for suffix in self.upload_suffixes.split(",")
+            if suffix.strip()
+        }
 
 
 @lru_cache
