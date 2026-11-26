@@ -23,12 +23,9 @@ per question.
 ## Project status
 
 - Docker + pgvector database is running in the `book_rag` schema.
-- Steps 1–3 are implemented and covered by tests.
-- Step 4 has the schema and helpers, but the row-writing part of
-  `store_index()` is still incomplete.
-- Step 5 is implemented, but it cannot return meaningful sources until Step 4
-  writes chunks and vectors.
-- The FastAPI layer and CLI scripts are not implemented yet.
+- Steps 1–5 are implemented and the full pipeline works end to end.
+- The FastAPI layer exposes book upload/indexing and query endpoints.
+- CLI scripts are not implemented yet.
 
 ## Requirements
 
@@ -80,6 +77,8 @@ Settings are loaded by `app/core/config.py`.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `DATA_DIR` | `./data` | Base directory for raw, processed, and index data |
+| `UPLOAD_SUFFIXES` | `.pdf,.txt,.md,.json` | Extensions accepted by `POST /api/books` |
+| `MAX_UPLOAD_MB` | `50` | Maximum upload size in megabytes (`0` disables the limit) |
 | `DATABASE_URL` | `postgresql+psycopg://bookrag:bookrag_dev@127.0.0.1:5433/bookrag` | SQLAlchemy database URL |
 | `DATABASE_SCHEMA` | `book_rag` | Schema used by all book-rag tables |
 | `CHUNK_SIZE` | `1000` | Maximum characters per chunk |
@@ -136,14 +135,38 @@ with factory() as session:
         print(source.chapter, source.page_start, source.page_end)
 ```
 
-These end-to-end examples require the pending Step 4 row writes.
+### HTTP API
+
+Start the server:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/health` | Database health check |
+| `POST` | `/api/books` | Upload a book (multipart `file`) and run Steps 1–4 |
+| `GET` | `/api/books` | List indexed books |
+| `POST` | `/api/query` | Ask a question (Step 5) |
+
+```bash
+curl -F "file=@data/raw/book.pdf" http://127.0.0.1:8000/api/books
+
+curl -X POST http://127.0.0.1:8000/api/query \
+  -H 'content-type: application/json' \
+  -d '{"question":"Who built the tide clock?","top_k":5}'
+```
+
+Uploads are saved under `DATA_DIR/raw/`. The accepted extensions, size limit,
+and `top_k` default all come from `.env` through `app/core/config.py`.
 
 ## Project layout
 
 ```text
 compose.yaml      Postgres + pgvector container
 app/
-  api/            FastAPI routes (not implemented)
+  api/            FastAPI routes (health, books, query)
   core/config.py  Typed settings from environment
   db/database.py  Engine, sessions, schema initialization
   db/models.py    SQLAlchemy schema
@@ -156,8 +179,8 @@ app/
     retrieval.py  Hybrid vector + BM25 search
     rerank.py     Cross-encoder reranking
     pipeline.py   Steps 1-4 orchestration
-  schemas/        API schemas (not implemented)
-  services/       Service layer (not implemented)
+  schemas/        API request/response models
+  services/       Service layer (reserved)
 data/
   raw/            Source books (git-ignored)
   processed/      Generated artifacts (git-ignored)
@@ -183,6 +206,8 @@ do not download model weights. Run it as `python -m pytest -q` (or plain
 
 ## Known limitations
 
-- `step4_store.validate_embedding_result()` and the row inserts in
-  `store_index()` are incomplete.
-- There is no HTTP API or CLI yet.
+- There is no CLI yet; use the HTTP API or the Python examples above.
+- Step 4 needs Postgres (pgvector), so its tests are not part of the offline
+  suite.
+- Embeddings are recomputed for the whole book on every re-upload; there is no
+  incremental indexing.
