@@ -17,7 +17,7 @@ from typing import Sequence
 import numpy as np
 
 from rank_bm25 import BM25Okapi
-
+from typing import Mapping
 from app.rag.step2_chunk import Chunk
 import re
 
@@ -164,29 +164,40 @@ def _unit_rows(matrix: np.ndarray) -> np.ndarray:
 def deduplicate_candidates(
     candidates: Sequence[Candidate],
     *,
-    max_per_chapter: int = 2,
+    vectors: Mapping[str, np.ndarray] | None = None,# used this to compare the actual vector chunks
+    max_per_chapter: int = 4,
+    similarity_threshold: float = 0.92,#   to catch the near identical chunks
 ) -> list[Candidate]:
-    """Drop near-duplicate candidates while preserving score order.
+    """Dropexact and  near-duplicate candidates while preserving score order.
 
     Adjacent chunks overlap, so the same passage can appear several times in
     the top results. Keeping a cap per chapter (or by page range) prevents the
     answer model from receiving five copies of the same text.
     """
-    if max_per_chapter <= 0:
-        return  []
-    seen_ids:set[str]=set()
-    per_chapter:dict[str,int]={}
-    kept:list[Candidate]=[]
+    kept: list[Candidate] = []
+    seen_ids: set[str] = set()
+    per_chapter: dict[str, int] = {}
 
     for candidate in candidates:
         if candidate.chunk_id in seen_ids:
             continue
-        used =per_chapter.get(candidate.chapter,0)
-        if used >= max_per_chapter:
-            continue
+
+        if max_per_chapter > 0:
+            used = per_chapter.get(candidate.chapter, 0)
+            if used >= max_per_chapter:
+                continue
+
+        if vectors is not None:
+            vec = vectors.get(candidate.chunk_id)
+            if vec is not None and any(
+                float(np.dot(vec, vectors[other.chunk_id])) >= similarity_threshold
+                for other in kept
+                if other.chunk_id in vectors
+            ):
+                continue
 
         seen_ids.add(candidate.chunk_id)
-        per_chapter[candidate.chapter]=used +1
+        per_chapter[candidate.chapter] = per_chapter.get(candidate.chapter, 0) + 1
         kept.append(candidate)
 
     return kept

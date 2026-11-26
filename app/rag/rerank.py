@@ -66,7 +66,10 @@ def rerank(
     if model is None:
         model = load_reranker(get_settings().reranker_model)
 
-    pairs = [(query, candidate.text) for candidate in candidates]
+    pairs = [
+    (query, f"{candidate.chapter}\n{candidate.text}")
+    for candidate in candidates
+]
     raw_scores = np.asarray(model.predict(pairs), dtype=np.float64).reshape(-1)
 
     if raw_scores.size != len(candidates):

@@ -95,7 +95,7 @@ def test_deduplicate_keeps_multiple_candidates():
         )
     ]
 
-    kept = retrieval.deduplicate_candidates(candidates)
+    kept = retrieval.deduplicate_candidates(candidates, max_per_chapter=2)
 
     assert [candidate.chunk_id for candidate in kept] == [
         "chunk-0",
@@ -103,3 +103,55 @@ def test_deduplicate_keeps_multiple_candidates():
         "chunk-3",
         "chunk-4",
     ]
+
+
+def test_deduplicate_default_cap_allows_four_per_chapter():
+    candidates = [
+        retrieval.Candidate(
+            chunk_id=f"chunk-{index}",
+            text=f"text {index}",
+            chapter=chapter,
+            page_start=1,
+            page_end=1,
+        )
+        for index, chapter in enumerate(
+            ["One", "One", "One", "Two", "Two", "Two"]
+        )
+    ]
+
+    kept = retrieval.deduplicate_candidates(candidates)
+
+    assert [candidate.chunk_id for candidate in kept] == [
+        "chunk-0",
+        "chunk-1",
+        "chunk-2",
+        "chunk-3",
+        "chunk-4",
+        "chunk-5",
+    ]
+
+
+def test_deduplicate_drops_near_duplicate_vectors():
+    candidates = [
+        retrieval.Candidate(
+            chunk_id=f"chunk-{index}",
+            text=f"text {index}",
+            chapter="One",
+            page_start=1,
+            page_end=1,
+        )
+        for index in range(3)
+    ]
+    vectors = {
+        "chunk-0": np.array([1.0, 0.0], dtype=np.float32),
+        "chunk-1": np.array([0.999, 0.001], dtype=np.float32),
+        "chunk-2": np.array([0.0, 1.0], dtype=np.float32),
+    }
+
+    kept = retrieval.deduplicate_candidates(
+        candidates,
+        vectors=vectors,
+        max_per_chapter=0,
+    )
+
+    assert [candidate.chunk_id for candidate in kept] == ["chunk-0", "chunk-2"]

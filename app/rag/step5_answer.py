@@ -29,6 +29,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from google import genai
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -38,8 +39,13 @@ from app.rag.rerank import rerank
 from app.rag.retrieval import Candidate, deduplicate_candidates, hybrid_search
 from app.rag.step3_embed import load_embedder
 from app.rag.step4_store import load_index
+from google.genai import errors as genai_errors
+from google.genai import errors as genai_errors
+import httpx
+import logging
 
-
+# Create or get a logger instance
+logger = logging.getLogger(__name__)
 @dataclass
 class Source:
     """A citable passage used in an answer.
@@ -153,7 +159,8 @@ def _llm_answer(question: str, sources: list[Source], settings: Settings) -> str
         "You are a careful book assistant. Answer only from the passages below. "
         "Cite every claim with the passage number, like [1]. "
         'If the passages do not contain the answer, say "The book does not say." '
-        "Never use outside knowledge."
+        "Never use outside knowledge. "
+        "Answer in at most 5 sentences or 3 bullets."
     )
     prompt = "\n\n".join(passages) + f"\n\nQuestion: {question}"
 
@@ -161,18 +168,44 @@ def _llm_answer(question: str, sources: list[Source], settings: Settings) -> str
         if not settings.gemini_api_key:
             raise ValueError("GEMINI_API_KEY is not set")
 
-        client = genai.Client(api_key=settings.gemini_api_key)
-        response = client.models.generate_content(
-            model=settings.llm_model,
-            contents=f"{system}\n\n{prompt}",
-        )
-        text = (response.text or "").strip()
+        try:
+            client = genai.Client(
+                api_key=settings.gemini_api_key,
+                http_options=genai.types.HttpOptions(
+                    timeout=30_000,  # milliseconds
+                    retry_options=genai.types.HttpRetryOptions(
+                        attempts=2,
+                        initial_delay=0.5,
+                        max_delay=2.0,
+                        exp_base=2.0,
+                        jitter=0.2,
+                        http_status_codes=[429, 500, 502, 503, 504],
+                    ),
+                ),
+            )
+            response = client.models.generate_content(
+                model=settings.llm_model,
+                contents=f"{system}\n\n{prompt}",
+                config=genai.types.GenerateContentConfig(
+                    max_output_tokens=1024,
+                    temperature=0.2,
+                    # thinking_config=genai.types.ThinkingConfig(
+                    #     thinking_level=genai.types.ThinkingLevel.MINIMAL,
+                    # ),
+                ),
+            )
+            text = (response.text or "").strip()
+        except (genai_errors.APIError , httpx.TimeoutException):
+                logger.warning("Gemini failed, using extractive fallback: %s", genai_errors.APIError )
+                return _extractive_answer(sources)
+
     else:
         raise ValueError(f"unsupported llm_backend={settings.llm_backend!r}")
 
     if not text:
         return REFUSAL
     return text
+
 
 
 def answer_question(
@@ -253,7 +286,7 @@ def answer_question(
     reranked = rerank(
         question,
         candidates,
-        top_k=top_k * 2,
+        top_k=settings.candidate_k,
     )
 
     # 6. threshold + deduplicate
@@ -262,7 +295,13 @@ def answer_question(
         for candidate in reranked
         if candidate.score >= settings.min_score
     ]
-    final = deduplicate_candidates(filtered)[:top_k]
+    vector_by_id = {chunk.id: vectors[i] for i, chunk in enumerate(chunks)}
+    final = deduplicate_candidates(
+        filtered,
+        vectors=vector_by_id,
+        max_per_chapter=settings.max_per_chapter,
+        similarity_threshold=settings.dedupe_similarity,
+    )[:top_k]
 
     if not final:
         return Answer(answer=REFUSAL, sources=[])

@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # 0 = BM25 only, 1 = vectors only
     hybrid_alpha: float = 0.6
     min_score: float = 0.20
+    # Soft cap per chapter; 0 disables the cap.
+    max_per_chapter: int = 4
+    # Cosine similarity at/above which two chunks are treated as duplicates.
+    dedupe_similarity: float = 0.92
     # Cross-encoder reranker (separate model; does not affect stored vectors)
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
