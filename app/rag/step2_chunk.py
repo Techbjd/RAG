@@ -161,7 +161,7 @@ def _split_pieces(text: str, max_chars: int) -> list[_Piece]:
 
         first_piece_of_paragraph = True
 
-        for sentence in re.split(r"(?<=[.!?])\s+", paragraph):
+        for sentence in re.split(r"(?<=[.!?])\s+", paragraph):#first check what comes immediately  with out consuming it  match the punction mark and match one or more ehtesopace
             sentence = sentence.strip()
             if not sentence:
                 continue
