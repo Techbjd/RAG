@@ -110,10 +110,20 @@ Run the indexing pipeline from Python:
 
 ```python
 from app.core.config import get_settings
+from app.db.database import create_db_engine, create_session_factory
 from app.rag.pipeline import index_book
 
 settings = get_settings()
-result = index_book("data/raw/book.pdf", settings=settings)
+engine = create_db_engine(settings)
+factory = create_session_factory(engine)
+
+with factory() as session:
+    try:
+        result = index_book("data/raw/book.pdf", session=session, settings=settings)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
 
 print(result.book.title)
 print(len(result.chunks))

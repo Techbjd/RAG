@@ -1,18 +1,19 @@
 """Indexing pipeline: runs Steps 1-4 in order.
 
-Input : a book file path (from the API upload / CLI).
+Input : a book file path plus an open SQLAlchemy session.
 Flow  :
     Step 1 ingest_book()   -> Book (chapters + page metadata)
     Step 2 chunk_book()    -> list[Chunk]
     Step 3 embed_chunks()  -> EmbeddingResult (vectors)
-    Step 4 store_index()   -> rows in data/index.db
+    Step 4 store_index()   -> rows in the ``book_rag`` Postgres schema
 
 Step 5 (answer_question) is the read path and is NOT part of this
 pipeline; it runs per query against the index written here.
 
-Transaction rule: ``store_index`` only flushes. When this module opens its
-own session it commits/rolls back itself; when the caller passes a session,
-the caller owns the commit.
+Transaction rule: this module only flushes. The caller owns the session and
+therefore owns commit/rollback. Building the engine and creating the schema
+is the composition root's job (``app.main`` lifespan or a CLI entrypoint),
+never this module's.
 """
 
 from __future__ import annotations
@@ -23,14 +24,9 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.db.database import (
-    create_db_engine,
-    create_session_factory,
-    init_db,
-)
 from app.rag.step1_ingest import Book, ingest_book
 from app.rag.step2_chunk import Chunk, chunk_book
-from app.rag.step3_embed import EmbeddingResult,embed_chunks
+from app.rag.step3_embed import EmbeddingResult, embed_chunks
 from app.rag.step4_store import (
     StoredIndex,
     get_document_id,
@@ -61,23 +57,22 @@ class IndexResult:
 def index_book(
     path: str | Path,
     *,
+    session: Session,
     title: str | None = None,
     settings: Settings | None = None,
-    session: Session | None = None,
     model=None,
     reset: bool = False,
 ) -> IndexResult:
-    """Run Steps 1-4 for one file and persist its index.
+    """Run Steps 1-4 for one file inside the caller's transaction.
 
     Args:
         path: Book file to index (.pdf/.txt/.md/.json).
+        session: Open SQLAlchemy session. The caller owns commit/rollback;
+            this function only flushes.
         title: Optional display title; defaults to the file stem.
         settings: App settings; defaults to ``get_settings()``. Its
             ``chunk_size``, ``chunk_overlap``, and embedding options drive
             Steps 2 and 3.
-        session: Optional SQLAlchemy session. When omitted, this function
-            creates the engine, creates missing tables, and commits the
-            transaction itself. When provided, the caller owns the commit.
         model: Optional preloaded/fake encoder, forwarded to
             ``embed_chunks`` (useful in tests and for reusing a warm model).
         reset: When True, clear the existing index first so a different
@@ -95,56 +90,6 @@ def index_book(
     if settings is None:
         settings = get_settings()
 
-    if session is not None:
-        return _index_with_session(
-            path,
-            title=title,
-            settings=settings,
-            session=session,
-            model=model,
-            reset=reset,
-            commit=False,
-        )
-
-    engine = create_db_engine(settings)
-    init_db(engine, settings)
-    factory = create_session_factory(engine)
-
-    with factory() as owned_session:
-        try:
-            result = _index_with_session(
-                path,
-                title=title,
-                settings=settings,
-                session=owned_session,
-                model=model,
-                reset=reset,
-                commit=True,
-            )
-        except Exception:
-            owned_session.rollback()
-            raise
-
-    engine.dispose()
-    return result
-
-
-def _index_with_session(
-    path: str | Path,
-    *,
-    title: str | None,
-    settings: Settings,
-    session: Session,
-    model,
-    reset: bool,
-    commit: bool,
-) -> IndexResult:
-    """Steps 1-4 against an already-open session.
-
-    ``commit`` is True only when ``index_book`` opened the session itself.
-    Keeping the orchestration here avoids duplicating the step calls for the
-    owned-session and caller-session paths.
-    """
     # Step 1: file -> Book
     book = ingest_book(path, title=title)
 
@@ -160,18 +105,14 @@ def _index_with_session(
     # Step 3: chunks -> normalized vectors
     embedded = embed_chunks(chunks, settings, model=model)
 
-    # Step 4: write rows in this transaction
+    # Step 4: write rows in the caller's transaction
     replaced = get_document_id(session, book.sha256) is not None
     if reset:
         reset_index(session)
         replaced = False
 
     stored = store_index(session, book, chunks, embedded)
-
-    if commit:
-        session.commit()
-    else:
-        session.flush()
+    session.flush()
 
     return IndexResult(
         book=book,

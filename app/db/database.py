@@ -7,9 +7,6 @@ the tables defined in ``app.db.models`` inside that schema.
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from contextlib import contextmanager
-
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session, sessionmaker
@@ -83,27 +80,3 @@ def init_db(engine: Engine, settings: Settings | None = None) -> None:
             )
 
     Base.metadata.create_all(engine)
-
-
-# Module-level engine for library callers; the API lifespan builds its own.
-settings = get_settings()
-engine = create_db_engine(settings)
-init_db(engine, settings)
-SessionLocal = create_session_factory(engine)
-
-
-@contextmanager
-def session_scope() -> Generator[Session, None, None]:
-    """Yield a session, committing or rolling back on exit."""
-    session = SessionLocal()
-
-    try:
-        yield session
-        session.commit()
-
-    except Exception:
-        session.rollback()
-        raise
-
-    finally:
-        session.close()
