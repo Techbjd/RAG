@@ -44,9 +44,9 @@ def test_rerank_orders_by_model_score_and_replaces_score():
     ]
     assert [candidate.score for candidate in result] == [2.0, 0.1]
     assert model.pairs == [
-        ("query", "passage 0"),
-        ("query", "passage 1"),
-        ("query", "passage 2"),
+        ("query", "Chapter One\npassage 0"),
+        ("query", "Chapter One\npassage 1"),
+        ("query", "Chapter One\npassage 2"),
     ]
     assert [candidate.score for candidate in candidates] == [0.0, 0.0, 0.0]
 

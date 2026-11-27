@@ -46,7 +46,7 @@ def rerank(
 ) -> list[Candidate]:
     """Reorder candidates with a cross-encoder and keep the best ``top_k``.
 
-    Each ``(query, candidate.text)`` pair is scored jointly by the
+    Each ``(query, chapter + "\\n" + text)`` pair is scored jointly by the
     cross-encoder, which is more precise than bi-encoder cosine similarity.
     The returned candidates keep their original metadata; their ``score`` is
     replaced with the reranker score. Pass a fake ``model`` in tests to avoid
