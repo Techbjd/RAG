@@ -7,7 +7,8 @@ the tables defined in ``app.db.models`` inside that schema.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
+from contextlib import contextmanager
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, make_url
@@ -35,15 +36,31 @@ def create_db_engine(settings: Settings | None = None) -> Engine:
         settings = get_settings()
 
     connect_args: dict[str, object] = {}
+    pool_kwargs: dict[str, object] = {}
     if make_url(settings.database_url).get_backend_name() == "postgresql":
+        if (
+            settings.database_pool_size < 1
+            or settings.database_max_overflow < 0
+            or settings.database_pool_timeout < 1
+            or settings.database_pool_recycle < -1
+        ):
+            raise ValueError("invalid database pool settings")
+
         connect_args["options"] = (
             f"-csearch_path={_schema_name(settings)},public"
         )
+        pool_kwargs = {
+            "pool_size": settings.database_pool_size,
+            "max_overflow": settings.database_max_overflow,
+            "pool_timeout": settings.database_pool_timeout,
+            "pool_recycle": settings.database_pool_recycle,
+        }
 
     return create_engine(
         settings.database_url,
         pool_pre_ping=True,
         connect_args=connect_args,
+        **pool_kwargs,
     )
 
 
@@ -68,22 +85,25 @@ def init_db(engine: Engine, settings: Settings | None = None) -> None:
     Base.metadata.create_all(engine)
 
 
-def session_scope(
-    settings: Settings | None = None,
-) -> Iterator[Session]:
-    """Yield a session for scripts, committing or rolling back on exit."""
-    engine = create_db_engine(settings)
-    init_db(engine, settings)
-    factory = create_session_factory(engine)
+# Module-level engine for library callers; the API lifespan builds its own.
+settings = get_settings()
+engine = create_db_engine(settings)
+init_db(engine, settings)
+SessionLocal = create_session_factory(engine)
 
-    with factory() as session:
-        try:
-            yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
 
-    engine.dispose()
+@contextmanager
+def session_scope() -> Generator[Session, None, None]:
+    """Yield a session, committing or rolling back on exit."""
+    session = SessionLocal()
+
+    try:
+        yield session
+        session.commit()
+
+    except Exception:
+        session.rollback()
+        raise
+
+    finally:
+        session.close()

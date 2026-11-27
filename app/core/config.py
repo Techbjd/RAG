@@ -18,6 +18,18 @@ class Settings(BaseSettings):
     # Dedicated schema for this project; "public" is left untouched.
     database_schema: str = "book_rag"
 
+    # --- API: database pool (PostgreSQL only) ---
+    # Set explicitly so live capacity is a deliberate choice, not a default.
+    database_pool_size: int = 5
+    database_max_overflow: int = 10
+    database_pool_timeout: int = 30
+    database_pool_recycle: int = 1800
+
+    # --- API: concurrency ---
+    # Cap simultaneous embed/rerank/LLM work; extra requests wait for a slot
+    # instead of competing for CPU and slowing every answer down.
+    max_concurrent_queries: int = 4
+
     # --- API: uploads ---
     # Comma-separated allowlist of file extensions accepted by POST /api/books.
     upload_suffixes: str = ".pdf,.txt,.md,.json"

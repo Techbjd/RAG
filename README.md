@@ -81,6 +81,11 @@ Settings are loaded by `app/core/config.py`.
 | `MAX_UPLOAD_MB` | `50` | Maximum upload size in megabytes (`0` disables the limit) |
 | `DATABASE_URL` | `postgresql+psycopg://bookrag:bookrag_dev@127.0.0.1:5433/bookrag` | SQLAlchemy database URL |
 | `DATABASE_SCHEMA` | `book_rag` | Schema used by all book-rag tables |
+| `DATABASE_POOL_SIZE` | `5` | Persistent PostgreSQL connections in the pool |
+| `DATABASE_MAX_OVERFLOW` | `10` | Extra connections allowed above `DATABASE_POOL_SIZE` |
+| `DATABASE_POOL_TIMEOUT` | `30` | Seconds to wait for a free pooled connection |
+| `DATABASE_POOL_RECYCLE` | `1800` | Seconds before a pooled connection is replaced |
+| `MAX_CONCURRENT_QUERIES` | `4` | Simultaneous embed/rerank/LLM jobs per process |
 | `CHUNK_SIZE` | `1000` | Maximum characters per chunk |
 | `CHUNK_OVERLAP` | `150` | Overlap between adjacent chunks |
 | `EMBEDDING_BACKEND` | `sentence-transformers` | Embedding backend |
@@ -118,22 +123,29 @@ print(result.embedded.vectors.shape)
 Run a question against the stored index:
 
 ```python
-from sqlalchemy.orm import Session
-
 from app.core.config import get_settings
 from app.db.database import create_db_engine, create_session_factory
-from app.rag.step5_answer import answer_question
+from app.rag.step5_answer import answer_question, load_indexes
 
 settings = get_settings()
 engine = create_db_engine(settings)
 factory = create_session_factory(engine)
 
+# Keep the DB phase short: load the index, then close the session.
 with factory() as session:
-    answer = answer_question("Who built the tide clock?", session=session)
-    print(answer.answer)
-    for source in answer.sources:
-        print(source.chapter, source.page_start, source.page_end)
+    indexes = load_indexes(session)
+
+answer = answer_question("Who built the tide clock?", settings=settings, indexes=indexes)
+print(answer.answer)
+for source in answer.sources:
+    print(source.chapter, source.page_start, source.page_end)
 ```
+
+`answer_question(..., session=session)` still works for convenience, but it
+holds the connection until the answer is finished. Prefer `load_indexes()` +
+`indexes=` in concurrent code so inference never occupies a pooled connection.
+`MAX_CONCURRENT_QUERIES` bounds simultaneous embedding/reranking/LLM work;
+extra requests wait for a slot instead of competing for CPU.
 
 ### HTTP API
 
@@ -211,6 +223,16 @@ pytest -q
 The test suite is offline. Retrieval and reranking tests use fake scores and
 do not download model weights. Run it as `python -m pytest -q` (or plain
 `pytest -q`, which uses the `pythonpath = .` setting in `pytest.ini`).
+
+To check live concurrency (needs the API server, Postgres, and an indexed
+book), run:
+
+```bash
+python scripts/load_test.py --concurrent 10
+```
+
+It sends one question per simulated device at the same time and reports
+per-device answers, latency, and peak database connections.
 
 ## Known limitations
 

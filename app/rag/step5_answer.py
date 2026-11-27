@@ -6,7 +6,7 @@ Where the input comes from:
     settings : app.core.config.Settings
 
 What it reads:
-    SQLite rows written by Step 4, loaded through step4_store.load_index().
+    Postgres rows written by Step 4, loaded through step4_store.load_index().
 
 Pipeline:
     1. load every stored document index
@@ -25,7 +25,10 @@ threshold, return REFUSAL instead of using outside knowledge.
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 from google import genai
@@ -38,14 +41,33 @@ from app.db.models import Document
 from app.rag.rerank import rerank
 from app.rag.retrieval import Candidate, deduplicate_candidates, hybrid_search
 from app.rag.step3_embed import load_embedder
-from app.rag.step4_store import load_index
-from google.genai import errors as genai_errors
+from app.rag.step4_store import StoredIndex, load_index
 from google.genai import errors as genai_errors
 import httpx
 import logging
 
 # Create or get a logger instance
 logger = logging.getLogger(__name__)
+
+
+def load_indexes(session: Session) -> list[StoredIndex]:
+    """Load every stored index into detached objects in one short DB phase.
+
+    ``load_index()`` returns plain Step 2 chunks plus a NumPy matrix, so the
+    caller can close the session before answering. The HTTP route does exactly
+    that; a pooled connection is then not held during inference or the LLM call.
+    """
+    document_ids = session.scalars(select(Document.id)).all()
+    indexes = [load_index(session, document_id) for document_id in document_ids]
+    return [index for index in indexes if index is not None]
+
+
+@lru_cache(maxsize=8)
+def _inference_slots(limit: int) -> threading.BoundedSemaphore:
+    """Return a process-wide semaphore bounding CPU/LLM work per process."""
+    return threading.BoundedSemaphore(max(1, limit))
+
+
 @dataclass
 class Source:
     """A citable passage used in an answer.
@@ -127,6 +149,25 @@ def _extractive_answer(sources: list[Source]) -> str:
     return sources[0].text
 
 
+@lru_cache(maxsize=4)
+def _gemini_client(api_key: str) -> genai.Client:
+    """Build one Gemini client per key and reuse it across requests."""
+    return genai.Client(
+        api_key=api_key,
+        http_options=genai.types.HttpOptions(
+            timeout=30_000,  # milliseconds
+            retry_options=genai.types.HttpRetryOptions(
+                attempts=2,
+                initial_delay=0.5,
+                max_delay=2.0,
+                exp_base=2.0,
+                jitter=0.2,
+                http_status_codes=[429, 500, 502, 503, 504],
+            ),
+        ),
+    )
+
+
 def _llm_answer(question: str, sources: list[Source], settings: Settings) -> str:
     """Ask the configured LLM to answer only from numbered passages.
 
@@ -169,20 +210,7 @@ def _llm_answer(question: str, sources: list[Source], settings: Settings) -> str
             raise ValueError("GEMINI_API_KEY is not set")
 
         try:
-            client = genai.Client(
-                api_key=settings.gemini_api_key,
-                http_options=genai.types.HttpOptions(
-                    timeout=30_000,  # milliseconds
-                    retry_options=genai.types.HttpRetryOptions(
-                        attempts=2,
-                        initial_delay=0.5,
-                        max_delay=2.0,
-                        exp_base=2.0,
-                        jitter=0.2,
-                        http_status_codes=[429, 500, 502, 503, 504],
-                    ),
-                ),
-            )
+            client = _gemini_client(settings.gemini_api_key)
             response = client.models.generate_content(
                 model=settings.llm_model,
                 contents=f"{system}\n\n{prompt}",
@@ -213,6 +241,7 @@ def answer_question(
     top_k: int = 5,
     *,
     settings: Settings | None = None,
+    indexes: Sequence[StoredIndex] | None = None,
     session: Session | None = None,
 ) -> Answer:
     """Retrieve, rerank, threshold, and answer with sources.
@@ -221,43 +250,40 @@ def answer_question(
         question: user question from the API layer.
         top_k: how many final passages to keep/send to the answer model.
         settings: app settings (defaults to get_settings()).
-        session: SQLAlchemy Session from the API layer (required).
+        indexes: detached snapshots from load_indexes(). The HTTP route uses
+            these so the DB session closes before inference starts.
+        session: optional fallback; when ``indexes`` is omitted the index is
+            loaded from this Session and committed before the slow work begins.
 
-    Data flow:
-        Step 4 rows -> load_index() -> chunks + vectors
-        Step 3 embedder -> query vector
-        retrieval.hybrid_search() -> wide Candidate list
-        rerank.rerank() -> narrow Candidate list
-        min_score + dedupe -> final Source list
-        extractive/Gemini -> Answer
-
-    Workflow:
-        1. Load the stored index.
-        2. Embed the question.
-        3. Run hybrid vector + keyword search.
-        4. Rerank candidates.
-        5. Apply score threshold and deduplication.
-        6. Return a refusal if nothing clears the threshold.
-        7. Otherwise build an extractive or LLM-grounded answer.
+    The DB phase (load_indexes) is deliberately separate from the CPU/LLM
+    phase below, so a pooled connection is not held while answering.
     """
     if settings is None:
         settings = get_settings()
-
-    if session is None:
-        raise ValueError(
-            "session is required; pass a Session from the API layer"
-        )
-
     if top_k <= 0:
         raise ValueError("top_k must be greater than zero")
 
-    # load every indexed book
-    document_ids = session.scalars(select(Document.id)).all()
-    indexes = [
-        load_index(session, document_id)
-        for document_id in document_ids
-    ]
-    indexes = [index for index in indexes if index is not None]
+    if indexes is None:
+        if session is None:
+            raise ValueError(
+                "pass indexes from load_indexes(), or a Session to load them"
+            )
+        indexes = load_indexes(session)
+        # Release the pooled connection before inference. The session factory
+        # uses expire_on_commit=False, so the detached data stays usable.
+        session.commit()
+
+    with _inference_slots(settings.max_concurrent_queries):
+        return _answer_from_indexes(question, top_k, indexes, settings)
+
+
+def _answer_from_indexes(
+    question: str,
+    top_k: int,
+    indexes: Sequence[StoredIndex],
+    settings: Settings,
+) -> Answer:
+    """Answer from an in-memory index snapshot, without touching the database."""
     if not indexes:
         return Answer(answer=REFUSAL, sources=[])
 
