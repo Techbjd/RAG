@@ -223,9 +223,9 @@ def _llm_answer(question: str, sources: list[Source], settings: Settings) -> str
                 ),
             )
             text = (response.text or "").strip()
-        except (genai_errors.APIError , httpx.TimeoutException):
-                logger.warning("Gemini failed, using extractive fallback: %s", genai_errors.APIError )
-                return _extractive_answer(sources)
+        except (genai_errors.APIError, httpx.TimeoutException) as exc:
+            logger.warning("Gemini failed, using extractive fallback: %s", exc)
+            return _extractive_answer(sources)
 
     else:
         raise ValueError(f"unsupported llm_backend={settings.llm_backend!r}")
